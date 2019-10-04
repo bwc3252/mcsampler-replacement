@@ -1,2 +1,2 @@
-import mcsampler_new
+from mcsampler_new import MCSampler
 import utils

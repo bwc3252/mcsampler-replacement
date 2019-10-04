@@ -9,9 +9,13 @@ import numpy as np
 import itertools
 import functools
 
+#from statutils import cumvar
+
+from multiprocessing import Pool
+
 from utils import monte_carlo_integrator as monte_carlo
 
-__author__ = "Chris Pankow <pankow@gravity.phys.uwm.edu>, Ben Champion <bwc3252@rit.edu>"
+__author__ = "Ben Champion"
 
 rosDebugMessages = True
 
@@ -39,7 +43,7 @@ class MCSampler(object):
         ("a", "b", "c") ?= ("a", "b", "c") ==> True
         (("a", "b", "c")) ?= ("a", "b", "c") ==> True
         (("a", "b"), "d")) ?= ("a", "b", "c") ==> False  # basic element 'd' not in set B
-        (("a", "b"), "d")) ?= ("a", "b", "d", "c") ==> False  # not all elements in set B
+        (("a", "b"), "d")) ?= ("a", "b", "d", "c") ==> False  # not all elements in set B 
         represented in set A
         """
         not_common = set(args) ^ set(params)
@@ -53,7 +57,7 @@ class MCSampler(object):
 
         to_match = filter(lambda i: not isinstance(i, tuple), not_common)
         against = filter(lambda i: isinstance(i, tuple), not_common)
-
+        
         matched = []
         import itertools
         for i in range(2, max(map(len, against))+1):
@@ -71,7 +75,7 @@ class MCSampler(object):
         self.params_ordered = []  # keep them in order. Important to break likelihood function need for names
         # parameter -> pdf function object
         self.pdf = {}
-        # If the pdfs aren't normalized, this will hold the normalization
+        # If the pdfs aren't normalized, this will hold the normalization 
         # constant
         self._pdf_norm = defaultdict(lambda: 1)
         # Cache for the sampling points
@@ -112,16 +116,16 @@ class MCSampler(object):
         self.rlim = {}
         self.adaptive = []
 
-    def add_parameter(self, params, pdf=None,  cdf_inv=None, left_limit=None, right_limit=None,
+    def add_parameter(self, params, pdf=None,  cdf_inv=None, left_limit=None, right_limit=None, 
                         prior_pdf=None, adaptive_sampling=False):
         """
-        Add one (or more) parameters to sample dimensions. params is either a string
-        describing the parameter, or a tuple of strings. The tuple will indicate to
-        the sampler that these parameters must be sampled together. left_limit and
-        right_limit are on the infinite interval by default, but can and probably should
-        be specified. If several params are given, left_limit, and right_limit must be a
-        set of tuples with corresponding length. Sampling PDF is required, and if not
-        provided, the cdf inverse function will be determined numerically from the
+        Add one (or more) parameters to sample dimensions. params is either a string 
+        describing the parameter, or a tuple of strings. The tuple will indicate to 
+        the sampler that these parameters must be sampled together. left_limit and 
+        right_limit are on the infinite interval by default, but can and probably should 
+        be specified. If several params are given, left_limit, and right_limit must be a 
+        set of tuples with corresponding length. Sampling PDF is required, and if not 
+        provided, the cdf inverse function will be determined numerically from the 
         sampling PDF.
         """
         self.params.add(params) # does NOT preserve order in which parameters are provided
@@ -179,9 +183,7 @@ class MCSampler(object):
         return temp_ret
 
 
-    def integrate(self, func, args, direct_eval=True, n_comp=None, n=None, nmax=None, write_to_file=False,
-                gmm_dict=None, var_thresh=0.05, min_iter=10, max_iter=20, neff=float('inf'), reflect=False,
-                mcsamp_func=None, integrator_func=None, proc_count=None):
+    def integrate(self, func, *args,**kwargs):
         '''
         Integrate the specified function over the specified parameters.
 
@@ -222,6 +224,23 @@ class MCSampler(object):
 
         proc_count: size of multiprocessing pool. set to None to not use multiprocessing
         '''
+        nmax = kwargs["nmax"] if kwargs.has_key("nmax") else 1e6
+        neff = kwargs["neff"] if kwargs.has_key("neff") else 1000
+        n = kwargs["n"] if kwargs.has_key("n") else min(1000, nmax)  # chunk size
+        n_comp = kwargs["n_comp"] if kwargs.has_key("n_comp") else 1
+        if 'gmm_dict' in kwargs.keys():
+            gmm_dict = kwargs['gmm_dict']  # required
+        else:
+            gmm_dict = None
+        reflect = kwargs['reflect'] if kwargs.has_key('reflect') else False
+        integrator_func  = kwargs['integrator_func'] if kwargs.has_key('integrator_func') else None
+        mcsamp_func  = kwargs['mcsamp_func'] if kwargs.has_key('mcsamp_func') else None
+        proc_count = kwargs['proc_count'] if kwargs.has_key('proc_count') else None
+        direct_eval = kwargs['direct_eval'] if kwargs.has_key('direct_eval') else False
+        min_iter = kwargs['min_iter'] if kwargs.has_key('min_iter') else 10
+        max_iter = kwargs['max_iter'] if kwargs.has_key('max_iter') else 20
+        var_thresh = kwargs['var_thres'] if kwargs.has_key('var_thresh') else 0.05
+        write_to_file = kwargs['write_to_file'] if kwargs.has_key('write_to_file') else False
 
         # set up a lot of preliminary stuff
         self.func = func
@@ -235,33 +254,30 @@ class MCSampler(object):
             bounds.append([self.llim[param], self.rlim[param]])
         bounds = np.array(bounds)
 
-        # for now, we hardcode the assumption that there are no correlated dimensions,
-        # unless otherwise specified
+        # for now, we hardcode the assumption that all dimensions are correlated
 
         if gmm_dict is None:
-            gmm_dict = {}
-            for x in range(dim):
-                gmm_dict[(x,)] = None
+            gmm_dict = {tuple(range(dim)):None}
 
         # do the integral
 
         integrator = monte_carlo.integrator(dim, bounds, gmm_dict, n_comp, n=n, prior=self.calc_pdf,
-                        reflect=reflect, user_func=integrator_func, proc_count=proc_count)
+                         user_func=integrator_func, proc_count=proc_count) # reflect=reflect,
         if not direct_eval:
             func = self.evaluate
         integrator.integrate(func, min_iter=min_iter, max_iter=max_iter, var_thresh=var_thresh, neff=neff, nmax=nmax)
 
         # get results
 
-        self.n = integrator.n
-        self.ntotal = integrator.ntotal
+        self.n = int(integrator.n)
+        self.ntotal = int(integrator.ntotal)
         integral = integrator.integral
         var = integrator.var
         eff_samp = integrator.eff_samp
-        sample_array = integrator.sample_array
-        value_array = integrator.value_array
-        p_array = integrator.p_array
-        prior_array = integrator.prior_array
+        sample_array = integrator.cumulative_samples
+        value_array = integrator.cumulative_values
+        p_array = integrator.cumulative_p_s
+        prior_array = integrator.cumulative_p
 
         # user-defined function
         if mcsamp_func is not None:
@@ -361,7 +377,7 @@ class HealPixSampler(object):
         phi (east to west) (0, 2*pi)
         declination: north pole = pi/2, south pole = -pi/2
         right ascension: (0, 2*pi)
-
+        
         dec = pi/2 - theta
         ra = phi
         """
@@ -375,7 +391,7 @@ class HealPixSampler(object):
         phi (east to west) (0, 2*pi)
         declination: north pole = pi/2, south pole = -pi/2
         right ascension: (0, 2*pi)
-
+        
         theta = pi/2 - dec
         ra = phi
         """
@@ -513,7 +529,7 @@ def convergence_test_MostSignificantPoint(pcut, rvs, params):
 
 # normality test: is the MC integral normally distributed, with a small standard deviation?
 #    - value: tests for converged integral
-#    - arguments:
+#    - arguments: 
 #         - ncopies:               # of sub-integrals
 #         - pcutNormalTest     Threshold p-value for normality test
 #         - sigmaCutErrorThreshold   Threshold relative error in the integral
@@ -521,7 +537,7 @@ def convergence_test_MostSignificantPoint(pcut, rvs, params):
 #           - this helps us handle large orders-of-magnitude differences
 #           - compatible with a *relative* error threshold on integral
 #           - only works for *positive-definite* integrands
-#    - other python normality tests:
+#    - other python normality tests:  
 #          scipy.stats.shapiro
 #          scipy.stats.anderson
 #  WARNING:
@@ -540,3 +556,4 @@ def convergence_test_NormalSubIntegrals(ncopies, pcutNormalTest, sigmaCutRelativ
     print(" Test values on distribution of log evidence:  (gaussianity p-value; standard deviation of ln evidence) ", valTest, igrandSigma)
     print(" Ln(evidence) sub-integral values, as used in tests  : ", igrandValues)
     return valTest> pcutNormalTest and igrandSigma < sigmaCutRelativeErrorThreshold   # Test on left returns a small value if implausible. Hence pcut ->0 becomes increasingly difficult (and requires statistical accidents). Test on right requires relative error in integral also to be small when pcut is small.   FIXME: Give these variables two different names
+    
